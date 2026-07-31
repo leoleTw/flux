@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flux - Live Stream Social</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #000000; color: #e7e9ea; }
+        html, body { height: 100%; margin: 0; overflow: hidden; }
+        
+        .post-enter { animation: slideDown 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards; }
+        @keyframes slideDown { from { opacity: 0; transform: translateY(-20px); } to { opacity: 1; transform: translateY(0); } }
+        
+        input[type="color"] { -webkit-appearance: none; border: none; width: 40px; height: 40px; border-radius: 50%; padding: 0; overflow: hidden; cursor: pointer; }
+        input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+        input[type="color"]::-webkit-color-swatch { border: none; border-radius: 50%; }
+        
+        .like-anim { animation: popHeart 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; }
+        @keyframes popHeart { 0% { transform: scale(1); } 50% { transform: scale(1.4); } 100% { transform: scale(1); } }
+        
+        .highlight-mention { background-color: rgba(29, 155, 240, 0.15); border-left: 3px solid #1d9bf0; }
+        
+        #feedStream {
+            overflow-y: auto;
+            flex: 1;
+            min-height: 0;
+            scrollbar-width: thin;
+            scrollbar-color: #3e4144 transparent;
+        }
+        #feedStream::-webkit-scrollbar { width: 8px; }
+        #feedStream::-webkit-scrollbar-track { background: transparent; }
+        #feedStream::-webkit-scrollbar-thumb { background-color: #3e4144; border-radius: 10px; border: 2px solid #000; }
+        #feedStream::-webkit-scrollbar-thumb:hover { background-color: #71767b; }
+    </style>
+</head>
+<body class="h-screen flex flex-col selection:bg-[#1d9bf0] selection:text-white">
+
+    <div id="setupScreen" class="absolute inset-0 z-50 bg-[#000000] flex flex-col items-center justify-center p-4">
+        <div class="w-full max-w-md bg-[#16181c] p-8 rounded-3xl border border-[#2f3336] shadow-2xl">
+            <div class="flex justify-center mb-6">
+                <div class="text-white text-6xl font-black font-mono tracking-tighter flex items-end">
+                    F<div class="w-4 h-4 bg-[#00ba7c] rounded-full mb-1.5 ml-1 shadow-[0_0_15px_rgba(0,186,124,0.5)]"></div>
+                </div>
+            </div>
+            <h1 class="text-2xl font-bold text-center mb-8">Bem-vindo ao Flux</h1>
+            <input type="text" id="usernameInput" placeholder="Seu Nome" class="w-full bg-[#202327] border border-[#333639] rounded-xl px-4 py-3 text-white mb-4 focus:outline-none">
+            <div class="flex gap-4 mb-6">
+                <div class="flex-1 text-center"><label class="text-xs text-[#71767b]">Cor Nome</label><div class="flex justify-center"><input type="color" id="nameColorInput" value="#1d9bf0"></div></div>
+                <div class="flex-1 text-center"><label class="text-xs text-[#71767b]">Cor Texto</label><div class="flex justify-center"><input type="color" id="textColorInput" value="#ffffff"></div></div>
+            </div>
+            <button id="enterBtn" class="w-full bg-white text-black font-bold py-3 rounded-full hover:bg-gray-200">Entrar no Flux</button>
+        </div>
+    </div>
+
+    <div id="mainApp" class="hidden flex-1 flex flex-col max-w-2xl mx-auto w-full border-x border-[#2f3336] h-full overflow-hidden">
+        <header class="h-14 border-b border-[#2f3336] flex items-center justify-between px-4 bg-black z-20">
+            <h1 class="text-xl font-bold font-mono tracking-tight text-white">Flux <span class="text-xs text-[#1d9bf0] ml-1 bg-[#1d9bf0]/10 px-2 py-1 rounded-full">AO VIVO</span></h1>
+            <span id="onlineCount" class="text-sm font-medium text-[#00ba7c]">1 online</span>
+        </header>
+
+        <div class="p-4 border-b border-[#2f3336] bg-black z-20">
+            <div class="flex gap-3 items-start">
+                <div id="myAvatar" class="w-10 h-10 rounded-full flex-shrink-0 flex items-center justify-center font-bold text-lg">?</div>
+                <div class="flex-1">
+                    <textarea id="postInput" class="w-full bg-transparent text-lg placeholder-[#71767b] resize-none focus:outline-none" placeholder="O que está acontecendo agora?"></textarea>
+                    <div class="flex justify-between items-center mt-2">
+                        <span class="text-xs text-[#71767b]" id="charCount">0/280</span>
+                        <button id="publishBtn" class="bg-[#1d9bf0] text-white font-bold py-1.5 px-5 rounded-full hover:bg-[#1a8cd8] disabled:opacity-50">Postar</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="feedStream" class="flex-1">
+            <div id="feedLoading" class="text-center py-10 text-[#71767b]">Aguardando posts ao vivo...</div>
+        </div>
+    </div>
+
+    <audio id="popSound" src="https://assets.mixkit.co/active_storage/sfx/2571/2571-preview.mp3"></audio>
+
+    <script>
+        const DOM = { setup: document.getElementById('setupScreen'), app: document.getElementById('mainApp'), userIn: document.getElementById('usernameInput'), nameColor: document.getElementById('nameColorInput'), textColor: document.getElementById('textColorInput'), enterBtn: document.getElementById('enterBtn'), postIn: document.getElementById('postInput'), pubBtn: document.getElementById('publishBtn'), feed: document.getElementById('feedStream'), avatar: document.getElementById('myAvatar'), charCount: document.getElementById('charCount'), feedLoading: document.getElementById('feedLoading'), onlineCount: document.getElementById('onlineCount') };
+        let currentUser = null, client = null, localPostsMemory = [], onlineUsers = new Map(), openCommentSections = new Set();
+        const myUid = 'usr_' + Math.random().toString(36).substr(2, 9);
+        const FEED_TOPIC = "flux_live_v2/feed", ACTIONS_TOPIC = "flux_live_v2/actions", PRESENCE_TOPIC = "flux_live_v2/presence";
+
+        DOM.enterBtn.addEventListener('click', () => {
+            currentUser = { id: myUid, name: DOM.userIn.value.trim() || 'Anônimo', nameColor: DOM.nameColor.value, textColor: DOM.textColor.value };
+            DOM.avatar.textContent = currentUser.name.charAt(0).toUpperCase();
+            DOM.avatar.style.backgroundColor = currentUser.nameColor + '20';
+            DOM.avatar.style.color = currentUser.nameColor;
+            DOM.setup.classList.add('hidden'); DOM.app.classList.remove('hidden');
+            client = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
+            client.on('connect', () => { client.subscribe([FEED_TOPIC, ACTIONS_TOPIC, PRESENCE_TOPIC]); });
+            client.on('message', (t, m) => {
+                const data = JSON.parse(m.toString());
+                if (t === FEED_TOPIC) { localPostsMemory.unshift(data); DOM.feedLoading.style.display = 'none'; renderFeed(); document.getElementById('popSound').play().catch(()=>{}); }
+                else if (t === ACTIONS_TOPIC) { handleAction(data); }
+                else if (t === PRESENCE_TOPIC) { onlineUsers.set(data.uid, Date.now()); DOM.onlineCount.textContent = Math.max(1, onlineUsers.size) + ' online'; }
+            });
+            setInterval(() => client.publish(PRESENCE_TOPIC, JSON.stringify({ uid: myUid })), 10000);
+        });
+
+        DOM.pubBtn.addEventListener('click', () => {
+            const text = DOM.postIn.value.trim();
+            if (!text) return;
+            client.publish(FEED_TOPIC, JSON.stringify({ id: 'p_'+Math.random(), author: currentUser.name, authorColor: currentUser.nameColor, content: text, textColor: currentUser.textColor, createdAt: Date.now(), likedBy: [], comments: [] }));
+            DOM.postIn.value = '';
+        });
+
+        function formatContent(text) {
+            let s = document.createTextNode(text).textContent;
+            s = s.replace(/(https?:\/\/[^\s]+?\.(?:png|jpg|gif|webp))/gi, '<img src="$1" class="mt-2 rounded-xl max-h-60 w-full object-cover">');
+            s = s.replace(/(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w-]+)/gi, '<iframe class="mt-2 w-full h-48 rounded-xl" src="https://www.youtube.com/embed/$1"></iframe>');
+            return s;
+        }
+
+        function handleAction(action) {
+            const post = localPostsMemory.find(p => p.id === action.postId);
+            if (!post) return;
+            if (action.type === 'like') { post.likedBy = post.likedBy || []; const idx = post.likedBy.indexOf(action.likerId); idx > -1 ? post.likedBy.splice(idx, 1) : post.likedBy.push(action.likerId); }
+            else if (action.type === 'comment') { post.comments = post.comments || []; post.comments.push(action.comment); }
+            renderFeed();
+        }
+
+        window.handleLike = (id) => client.publish(ACTIONS_TOPIC, JSON.stringify({type: 'like', postId: id, likerId: myUid}));
+        window.toggleComments = (id) => { openCommentSections.has(id) ? openCommentSections.delete(id) : openCommentSections.add(id); renderFeed(); };
+        window.submitComment = (id) => { const input = document.getElementById('cmt-'+id); client.publish(ACTIONS_TOPIC, JSON.stringify({type: 'comment', postId: id, comment: {author: currentUser.name, content: input.value}})); input.value = ''; };
+
+        function renderFeed() {
+            DOM.feed.innerHTML = localPostsMemory.map(post => `
+                <div class="p-4 border-b border-[#2f3336] text-[15px] post-enter">
+                    <div class="flex gap-3">
+                        <div class="w-10 h-10 rounded-full flex items-center justify-center font-bold" style="background:${post.authorColor}20; color:${post.authorColor}">${post.author.charAt(0).toUpperCase()}</div>
+                        <div class="flex-1">
+                            <span class="font-bold" style="color:${post.authorColor}">${post.author}</span>
+                            <div class="mt-1" style="color:${post.textColor}">${formatContent(post.content)}</div>
+                            <div class="flex gap-4 mt-2 text-[#71767b]">
+                                <button onclick="handleLike('${post.id}')">❤️ ${post.likedBy?.length || 0}</button>
+                                <button onclick="toggleComments('${post.id}')">💬 ${post.comments?.length || 0}</button>
+                            </div>
+                            <div class="${openCommentSections.has(post.id) ? '' : 'hidden'} mt-2">
+                                <input id="cmt-${post.id}" class="w-full bg-[#202327] rounded-full px-3 py-1 text-sm text-white" placeholder="Comentar...">
+                                <button onclick="submitComment('${post.id}')" class="text-xs text-[#1d9bf0] ml-2">Enviar</button>
+                                ${(post.comments || []).map(c => `<div class="text-xs mt-1"><b>${c.author}:</b> ${c.content}</div>`).join('')}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+    </script>
+</body>
+</html>
